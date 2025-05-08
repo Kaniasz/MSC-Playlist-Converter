@@ -8,12 +8,13 @@ from tkinter.scrolledtext import ScrolledText
 import yt_dlp
 import re
 from PIL import Image, ImageTk
+import tkinterdnd2 as tkdnd
 
 def resource_path(relative_path):
     try:
         base_path = sys._MEIPASS
     except Exception:
-        base_path = os.path.abspath(".")
+        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'resources'))
     return os.path.join(base_path, relative_path)
 
 def get_steam_path():
@@ -198,7 +199,6 @@ class MSCPlaylistGUI:
         self.entry = tk.Entry(row1, width=32, justify="center")
         self.entry.pack(side="left")
         try:
-            import tkinterdnd2 as tkdnd
             self.dnd = tkdnd.TkinterDnD.Tk()
             self.entry.drop_target_register(tkdnd.DND_TEXT)
             self.entry.dnd_bind('<<Drop>>', self.on_drop)
