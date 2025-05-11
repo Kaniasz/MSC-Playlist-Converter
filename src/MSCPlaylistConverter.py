@@ -122,7 +122,7 @@ def download_track(url, out_path):
     except Exception:
         return None, None, None
 
-def convert_track(filepath, idx, out_folder, high_quality=True):
+def convert_track(filepath, idx, out_folder, high_quality=True, metadata=None):
     try:
         if not os.path.isfile(filepath):
             return False, f"Input file does not exist: {filepath}"
@@ -137,9 +137,13 @@ def convert_track(filepath, idx, out_folder, high_quality=True):
             FFMPEG_PATH,
             '-y',
             '-i', filepath,
-            *audio_args,
-            out_path
         ]
+        # Add metadata if provided
+        if metadata:
+            for k, v in metadata.items():
+                if v:
+                    cmd += ['-metadata', f'{k}={v}']
+        cmd += [*audio_args, out_path]
         kwargs = {}
         if sys.platform == "win32":
             kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
@@ -460,13 +464,35 @@ class MSCPlaylistGUI:
                     if single_track:
                         track_idx = get_next_track_number(out_folder)
                         filepath, title, thumbnail = download_track(media_url, os.path.join(out_folder, f"track{track_idx}"))
+                        # Try to extract metadata from info if available
+                        info = None
+                        try:
+                            with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+                                info = ydl.extract_info(media_url, download=False)
+                        except Exception:
+                            pass
+                        metadata = {}
+                        if info:
+                            metadata['title'] = info.get('title')
+                            metadata['artist'] = info.get('artist') or info.get('uploader')
+                            metadata['genre'] = info.get('genre')
+                            # Length in seconds to mm:ss
+                            duration = info.get('duration')
+                            if duration:
+                                minutes = int(duration // 60)
+                                seconds = int(duration % 60)
+                                metadata['comment'] = f"Length: {minutes}:{seconds:02d}"
+                        else:
+                            metadata['title'] = title
+                        success, result = convert_track(filepath, track_idx, out_folder, self.high_quality_var.get(), metadata)
                     else:
                         track_idx = idx
                         filepath, title, thumbnail = download_track(media_url, os.path.join(out_folder, f"track{track_idx}"))
+                        metadata = {'title': title}
+                        success, result = convert_track(filepath, track_idx, out_folder, self.high_quality_var.get(), metadata)
                     if not filepath:
                         continue
                     self.safe_after(self.set_current_song, title or "Unknown", track_idx, total)
-                    success, result = convert_track(filepath, track_idx, out_folder, self.high_quality_var.get())
                     if not success:
                         self.safe_after(self.show_error, result)
                         continue
