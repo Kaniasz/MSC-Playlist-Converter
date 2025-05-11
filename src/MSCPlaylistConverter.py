@@ -160,7 +160,7 @@ def get_next_track_number(folder):
     return max(numbers, default=0) + 1
 
 def confirm_and_clean_radio_folder(master, folder):
-    existing_files = [f for f in os.listdir(folder) if os.path.isfile(os.path.join(folder, f))]
+    existing_files = [f for f in os.listdir(folder) if os.path.isfile(os.path.join(folder, f)) and f != "songnames.xml"]
     if existing_files:
         proceed = messagebox.askyesno(
             "Destination Folder Not Empty",
@@ -169,6 +169,8 @@ def confirm_and_clean_radio_folder(master, folder):
         if not proceed:
             return False
     for f in os.listdir(folder):
+        if f == "songnames.xml":
+            continue
         try:
             fp = os.path.join(folder, f)
             if os.path.isfile(fp):
