@@ -8,6 +8,7 @@ from tkinter.scrolledtext import ScrolledText
 import yt_dlp
 import re
 from PIL import Image, ImageTk
+import time
 
 def resource_path(relative_path):
     try:
@@ -138,7 +139,6 @@ def convert_track(filepath, idx, out_folder, high_quality=True, metadata=None):
             '-y',
             '-i', filepath,
         ]
-        # Add metadata if provided
         if metadata:
             for k, v in metadata.items():
                 if v:
@@ -195,6 +195,12 @@ class MSCPlaylistGUI:
         self.small_geometry = "410x175"
         master.title("MSC Playlist Converter")
         master.geometry(self.small_geometry)
+        master.update_idletasks()
+        width = 410
+        height = 175
+        x = (master.winfo_screenwidth() // 2) - (width // 2)
+        y = (master.winfo_screenheight() // 2) - (height // 2)
+        master.geometry(f"{width}x{height}+{x}+{y}")
         self.master.minsize(410, 175)
         self.master.resizable(False, False)
 
@@ -245,7 +251,6 @@ class MSCPlaylistGUI:
         self.button_frame = tk.Frame(main_frame)
         self.button_frame.pack(pady=(0, 10))
 
-        # Add tooltip for high-quality checkbox
         def show_high_quality_tooltip(event):
             x = self.high_quality_checkbox.winfo_rootx() + self.high_quality_checkbox.winfo_width() + 10
             y = self.high_quality_checkbox.winfo_rooty() + 8
@@ -272,12 +277,15 @@ class MSCPlaylistGUI:
         self.high_quality_checkbox.bind("<Enter>", show_high_quality_tooltip)
         self.high_quality_checkbox.bind("<Leave>", hide_high_quality_tooltip)
 
+        self.eta_var = tk.StringVar(value="ETA: --:--")
+        self.eta_label = tk.Label(self.button_frame, textvariable=self.eta_var, font=("TkDefaultFont", 9))
+        self.eta_label.pack(side="left", padx=(0, 8))
+
         self.download_button = tk.Button(self.button_frame, text="Start", command=self.start_download)
         self.download_button.pack(side="left", padx=(0, 8))
         self.cancel_button = tk.Button(self.button_frame, text="Cancel", command=self.cancel_download, state='disabled')
         self.cancel_button.pack(side="left", padx=(0, 8))
 
-        # Move the 'Output Folder' button to the same line as the Start and Cancel buttons, aligned to the right
         self.open_output_btn = tk.Button(self.button_frame, text="Output Folder", command=self.open_output_folder)
         self.open_output_btn.pack(side="right", padx=(8, 0))
 
@@ -405,6 +413,14 @@ class MSCPlaylistGUI:
         else:
             subprocess.Popen(["xdg-open", path])
 
+    def update_eta(self, eta_seconds):
+        if eta_seconds is None or eta_seconds < 0:
+            self.eta_var.set("ETA: --:--")
+            return
+        minutes = eta_seconds // 60
+        seconds = eta_seconds % 60
+        self.eta_var.set(f"ETA: {minutes:02d}:{seconds:02d}")
+
     def start_download(self):
         url = self.entry.get().strip()
         out_folder = self.get_output_folder()
@@ -436,7 +452,6 @@ class MSCPlaylistGUI:
                 self.show_error(f"Output folder not found and could not be created:\n{out_folder}")
                 return
 
-        # Only clean folder for playlists, not single tracks
         if not single_track:
             if not confirm_and_clean_radio_folder(self.master, out_folder):
                 self.show_error("Aborted by user (output folder not cleaned).")
@@ -453,18 +468,33 @@ class MSCPlaylistGUI:
             files = []
             coverart_done = False
             coverart_path = self.cover_path_var.get()
+            elapsed_times = []
+            download_times = []
+            convert_times = []
+            eta_seconds = None
+            stop_eta = threading.Event()
+            ROLLING_WINDOW = 8
+
+            def eta_countdown():
+                nonlocal eta_seconds
+                while not stop_eta.is_set() and eta_seconds is not None and eta_seconds > 0:
+                    self.safe_after(self.update_eta, eta_seconds)
+                    time.sleep(1)
+                    eta_seconds -= 1
+                self.safe_after(self.update_eta, eta_seconds)
+
+            eta_thread = None
             try:
                 for idx, media_url in enumerate(urls_to_dl, 1):
+                    start_download = time.time()
                     if self.cancel_flag.is_set():
                         self.safe_after(self.set_status, "Cancelled")
                         self.safe_after(self.download_button.config, state='normal')
                         self.safe_after(self.cancel_button.config, state='disabled')
                         return
-                    # For single track, use next available track number
                     if single_track:
                         track_idx = get_next_track_number(out_folder)
                         filepath, title, thumbnail = download_track(media_url, os.path.join(out_folder, f"track{track_idx}"))
-                        # Try to extract metadata from info if available
                         info = None
                         try:
                             with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
@@ -476,7 +506,6 @@ class MSCPlaylistGUI:
                             metadata['title'] = info.get('title')
                             metadata['artist'] = info.get('artist') or info.get('uploader')
                             metadata['genre'] = info.get('genre')
-                            # Length in seconds to mm:ss
                             duration = info.get('duration')
                             if duration:
                                 minutes = int(duration // 60)
@@ -490,13 +519,39 @@ class MSCPlaylistGUI:
                         filepath, title, thumbnail = download_track(media_url, os.path.join(out_folder, f"track{track_idx}"))
                         metadata = {'title': title}
                         success, result = convert_track(filepath, track_idx, out_folder, self.high_quality_var.get(), metadata)
+                    end_download = time.time()
+                    download_time = end_download - start_download
                     if not filepath:
                         continue
                     self.safe_after(self.set_current_song, title or "Unknown", track_idx, total)
                     if not success:
                         self.safe_after(self.show_error, result)
                         continue
+                    start_convert = time.time()
                     files.append(result)
+                    end_convert = time.time()
+                    convert_time = end_convert - start_convert
+                    download_times.append(download_time)
+                    convert_times.append(convert_time)
+                    if len(download_times) > ROLLING_WINDOW:
+                        download_times.pop(0)
+                    if len(convert_times) > ROLLING_WINDOW:
+                        convert_times.pop(0)
+                    def filter_outliers(times):
+                        if not times:
+                            return times
+                        median = sorted(times)[len(times)//2]
+                        return [t for t in times if t < 2*median]
+                    filtered_download = filter_outliers(download_times)
+                    filtered_convert = filter_outliers(convert_times)
+                    avg_download = sum(filtered_download) / len(filtered_download) if filtered_download else 0
+                    avg_convert = sum(filtered_convert) / len(filtered_convert) if filtered_convert else 0
+                    avg_time = avg_download + avg_convert
+                    remaining = total - idx
+                    eta_seconds = int(avg_time * remaining)
+                    if eta_thread is None or not eta_thread.is_alive():
+                        eta_thread = threading.Thread(target=eta_countdown, daemon=True)
+                        eta_thread.start()
                     if is_cd and not coverart_done and not coverart_path and thumbnail:
                         thumb_path = os.path.join(out_folder, "coverart.jpg")
                         try:
@@ -509,6 +564,8 @@ class MSCPlaylistGUI:
                             pass
                     self.safe_after(self.set_progress, idx, total)
 
+                stop_eta.set()
+                self.safe_after(self.eta_var.set, "ETA: --:--")
                 if is_cd:
                     coverart_final = os.path.join(out_folder, "cd.png")
                     if coverart_path:
@@ -533,10 +590,12 @@ class MSCPlaylistGUI:
                     self.safe_after(self.show_error, "No songs processed.")
                 self.safe_after(self.cancel_button.config, state='disabled')
             except Exception as e:
+                stop_eta.set()
                 self.safe_after(self.show_error, str(e))
                 self.safe_after(self.set_status, "Waiting")
                 self.safe_after(self.cancel_button.config, state='disabled')
             finally:
+                stop_eta.set()
                 self.safe_after(self.download_button.config, state='normal')
 
         self.current_thread = threading.Thread(target=task, daemon=True)
@@ -632,6 +691,7 @@ class MSCPlaylistGUI:
         self.set_status("Cancelled")
         self.progress['value'] = 0
         self.status_song_var.set("Cancelled")
+        self.eta_var.set("ETA: --:--")
         self.cancel_button.config(state='disabled')
         self.download_button.config(state='normal')
         if self.current_thread and self.current_thread.is_alive():
