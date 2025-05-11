@@ -41,10 +41,4 @@ python src/MSCPlaylistConverter.py
 
 ## Output
 The converted audio files will be saved in the designated output folder based on the selected mode. Cover art can also be imported for CD outputs.
-
-## License
-This project is licensed under the MIT License. See the LICENSE file for more details.
-
-## Acknowledgments
-- This application uses FFmpeg for audio processing. Ensure that the FFmpeg binaries are included in the resources folder.
-- Thanks to the developers of yt-dlp for providing a powerful tool for downloading media from various platforms.
+When downloading a single track it will add it to existing ones.

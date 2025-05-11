@@ -122,16 +122,22 @@ def download_track(url, out_path):
     except Exception:
         return None, None, None
 
-def convert_track(filepath, idx, out_folder):
+def convert_track(filepath, idx, out_folder, high_quality=True):
     try:
+        if not os.path.isfile(filepath):
+            return False, f"Input file does not exist: {filepath}"
         ext = ".ogg"
         fname = f"track{idx}{ext}"
         out_path = os.path.join(out_folder, fname)
+        if high_quality:
+            audio_args = ['-ab', '320k']
+        else:
+            audio_args = ['-ab', '96k', '-ac', '2', '-ar', '22050']
         cmd = [
             FFMPEG_PATH,
             '-y',
             '-i', filepath,
-            '-ab', '320k',
+            *audio_args,
             out_path
         ]
         kwargs = {}
@@ -139,13 +145,13 @@ def convert_track(filepath, idx, out_folder):
             kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
         proc = subprocess.run(cmd, capture_output=True, text=True, **kwargs)
         if proc.returncode != 0:
-            return None
-        if proc.returncode == 0 and os.path.getsize(filepath) < 500000:  # Approx. size for 30s audio
-            return "The song is region-locked and only a 30-second preview could be downloaded."
+            return False, f"FFmpeg error: {proc.stderr.strip()}"
+        if proc.returncode == 0 and os.path.getsize(filepath) < 500000:
+            return False, "The song is region-locked and only a 30-second preview could be downloaded."
         os.remove(filepath)
-        return out_path
-    except Exception:
-        return None
+        return True, out_path
+    except Exception as e:
+        return False, f"Conversion error: {str(e)}"
 
 def get_next_track_number(folder):
     ext = ".ogg"
@@ -399,9 +405,11 @@ class MSCPlaylistGUI:
         is_cd = self.output_mode_var.get().startswith("CD")
 
         urls_to_dl = []
+        single_track = False
         if url:
             if is_youtube_track(url) or is_soundcloud_track(url):
                 urls_to_dl = get_single_track_info(url)
+                single_track = True
             elif is_soundcloud_playlist(url):
                 urls_to_dl = get_soundcloud_playlist_tracks(url)
             elif is_youtube_playlist(url):
@@ -422,8 +430,11 @@ class MSCPlaylistGUI:
                 self.show_error(f"Output folder not found and could not be created:\n{out_folder}")
                 return
 
-        if not confirm_and_clean_radio_folder(self.master, out_folder):
-            return
+        # Only clean folder for playlists, not single tracks
+        if not single_track:
+            if not confirm_and_clean_radio_folder(self.master, out_folder):
+                self.show_error("Aborted by user (output folder not cleaned).")
+                return
 
         self.progress['value'] = 0
         self.set_status("Processing ...")
@@ -437,23 +448,27 @@ class MSCPlaylistGUI:
             coverart_done = False
             coverart_path = self.cover_path_var.get()
             try:
-                idx = 1
-                for i, media_url in enumerate(urls_to_dl, 1):
+                for idx, media_url in enumerate(urls_to_dl, 1):
                     if self.cancel_flag.is_set():
                         self.safe_after(self.set_status, "Cancelled")
                         self.safe_after(self.download_button.config, state='normal')
                         self.safe_after(self.cancel_button.config, state='disabled')
                         return
-                    filepath, title, thumbnail = download_track(media_url, os.path.join(out_folder, f"track{idx}"))
+                    # For single track, use next available track number
+                    if single_track:
+                        track_idx = get_next_track_number(out_folder)
+                        filepath, title, thumbnail = download_track(media_url, os.path.join(out_folder, f"track{track_idx}"))
+                    else:
+                        track_idx = idx
+                        filepath, title, thumbnail = download_track(media_url, os.path.join(out_folder, f"track{track_idx}"))
                     if not filepath:
                         continue
-                    self.safe_after(self.set_current_song, title or "Unknown", idx, total)
-                    ogg_file = convert_track(filepath, idx, out_folder)
-                    if isinstance(ogg_file, str):  # If an error message is returned
-                        self.safe_after(self.show_error, ogg_file)
-                        return  # Stop processing further songs if region-locked warning is encountered
-                    if ogg_file:
-                        files.append(ogg_file)
+                    self.safe_after(self.set_current_song, title or "Unknown", track_idx, total)
+                    success, result = convert_track(filepath, track_idx, out_folder, self.high_quality_var.get())
+                    if not success:
+                        self.safe_after(self.show_error, result)
+                        continue
+                    files.append(result)
                     if is_cd and not coverart_done and not coverart_path and thumbnail:
                         thumb_path = os.path.join(out_folder, "coverart.jpg")
                         try:
@@ -465,7 +480,6 @@ class MSCPlaylistGUI:
                         except Exception:
                             pass
                     self.safe_after(self.set_progress, idx, total)
-                    idx += 1
 
                 if is_cd:
                     coverart_final = os.path.join(out_folder, "cd.png")
@@ -488,10 +502,7 @@ class MSCPlaylistGUI:
                 elif files:
                     self.safe_after(self.show_success, files)
                 else:
-                    warning_message = "No songs processed."
-                    if any(isinstance(ogg_file, str) and "region-locked" in ogg_file for ogg_file in files):
-                        warning_message += " Some songs were region-locked and only previews could be downloaded."
-                    self.safe_after(self.show_error, warning_message)
+                    self.safe_after(self.show_error, "No songs processed.")
                 self.safe_after(self.cancel_button.config, state='disabled')
             except Exception as e:
                 self.safe_after(self.show_error, str(e))
@@ -549,12 +560,11 @@ class MSCPlaylistGUI:
                         return
                     fname = os.path.basename(localfile)
                     self.safe_after(self.set_current_song, fname, idx, total)
-                    ogg_file = convert_track(localfile, idx, out_folder)
-                    if isinstance(ogg_file, str):  # If an error message is returned
-                        self.safe_after(self.show_error, ogg_file)
-                        break  # Stop processing further songs if region-locked warning is encountered
-                    if ogg_file:
-                        processed_files.append(ogg_file)
+                    success, result = convert_track(localfile, idx, out_folder, self.high_quality_var.get())
+                    if not success:
+                        self.safe_after(self.show_error, result)
+                        continue
+                    processed_files.append(result)
                     self.safe_after(self.set_progress, idx, total)
                 if is_cd:
                     coverart_final = os.path.join(out_folder, "cd.png")
@@ -577,10 +587,7 @@ class MSCPlaylistGUI:
                 elif processed_files:
                     self.safe_after(self.show_success, processed_files)
                 else:
-                    warning_message = "No songs processed."
-                    if any(isinstance(ogg_file, str) and "region-locked" in ogg_file for ogg_file in processed_files):
-                        warning_message += " Some songs were region-locked and only previews could be downloaded."
-                    self.safe_after(self.show_error, warning_message)
+                    self.safe_after(self.show_error, "No songs processed.")
                 self.safe_after(self.cancel_button.config, state='disabled')
             except Exception as e:
                 self.safe_after(self.show_error, str(e))
