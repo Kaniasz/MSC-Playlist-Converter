@@ -1,5 +1,7 @@
-#vMSC Playlist Converter
-
+#MSC Playlist Converter
+<p align="center">
+  <img src="src/resources/icon.png" alt="Logo" width="150"/>
+</p>
 ## Overview
 The MSC Playlist Converter is a Python application designed to facilitate the downloading and conversion of audio tracks from YouTube and SoundCloud into a format suitable for use in the game "My Summer Car." The application features a user-friendly graphical interface built with Tkinter.
 
