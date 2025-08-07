@@ -1,5 +1,5 @@
 <p align="left">
-  <img src="path/to/logo.png" alt="Logo" height="40" style="vertical-align:middle;"/>
+  <img src="src/resources/icon.png" alt="Logo" height="40" style="vertical-align:middle;"/>
   <span style="font-size:2em; vertical-align:middle;"><b>MSC Playlist Converter</b></span>
 </p>
 
