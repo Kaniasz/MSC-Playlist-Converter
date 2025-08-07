@@ -1,7 +1,11 @@
-<p align="left">
-  <img src="src/resources/icon.png" alt="Logo" height="40" style="vertical-align:middle;"/>
-  <span style="font-size:2em; vertical-align:middle;"><b>MSC Playlist Converter</b></span>
-</p>
+<div style="display: flex; align-items: center;">
+  <div style="flex: 1; text-align: left;">
+    <h1 style="margin: 0; font-size: 2.5em;">MSC Playlist Converter</h1>
+  </div>
+  <div style="flex: 1; text-align: center;">
+    <img src="src/resources/icon.png" alt="Logo" height="60">
+  </div>
+</div>
 
 ## Overview
 The MSC Playlist Converter is a Python application designed to facilitate the downloading and conversion of audio tracks from YouTube and SoundCloud into a format suitable for use in the game "My Summer Car." The application features a user-friendly graphical interface built with Tkinter.
