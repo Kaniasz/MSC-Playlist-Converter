@@ -255,7 +255,7 @@ def search_youtube_fallback(title, artist=None):
         logger.error(f"YouTube fallback search failed: {e}")
         return None
 
-def convert_track(filepath, idx, out_folder, high_quality=True, metadata=None):
+def convert_track(filepath, idx, out_folder, high_quality=True, metadata=None, delete_original=True):
     try:
         logger.info(f"Converting track {idx}: {os.path.basename(filepath)}")
         logger.debug(f"FFmpeg path being used: {FFMPEG_PATH}")
@@ -265,6 +265,33 @@ def convert_track(filepath, idx, out_folder, high_quality=True, metadata=None):
             error_msg = f"Input file does not exist: {filepath}"
             logger.error(error_msg)
             return False, error_msg
+        
+        # Check for problematic characters and create safe temp file if needed
+        problematic_chars = ['⧸', '：', 'ᴙ', '⟨', '⟩', '[', ']', '(', ')', '&', '%', '!', '@', '#', '$', '^', '*', '+', '=', '{', '}', '|', '\\', ':', ';', '"', "'", '<', '>', ',', '?', '`', '~']
+        original_filepath = filepath
+        temp_filepath = None
+        
+        if any(char in filepath for char in problematic_chars):
+            logger.warning(f"File path contains potentially problematic characters, creating safe temp copy")
+            import tempfile
+            import shutil
+            
+            # Get file extension
+            _, ext = os.path.splitext(filepath)
+            
+            # Create temp file with safe name
+            temp_fd, temp_filepath = tempfile.mkstemp(suffix=ext, prefix=f"msc_temp_{idx}_")
+            os.close(temp_fd)  # Close the file descriptor
+            
+            try:
+                shutil.copy2(filepath, temp_filepath)
+                filepath = temp_filepath
+                logger.debug(f"Created safe temp copy: {temp_filepath}")
+            except Exception as e:
+                logger.error(f"Failed to create temp copy: {e}")
+                if temp_filepath and os.path.exists(temp_filepath):
+                    os.remove(temp_filepath)
+                return False, f"Failed to create temp copy: {e}"
         
         ext = ".ogg"
         fname = f"track{idx}{ext}"
@@ -281,6 +308,8 @@ def convert_track(filepath, idx, out_folder, high_quality=True, metadata=None):
             FFMPEG_PATH,
             '-y',
             '-i', filepath,
+            '-vn',  # Disable video processing (ignore album art)
+            '-c:a', 'libvorbis',  # Explicitly use Vorbis audio codec
         ]
         if metadata:
             for k, v in metadata.items():
@@ -293,12 +322,25 @@ def convert_track(filepath, idx, out_folder, high_quality=True, metadata=None):
             kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
         
         logger.debug(f"FFmpeg command: {' '.join(cmd)}")
+        logger.debug(f"Input file path: {filepath}")
+        logger.debug(f"Output file path: {out_path}")
+        logger.debug(f"Input file exists: {os.path.exists(filepath)}")
+        logger.debug(f"Output directory exists: {os.path.exists(os.path.dirname(out_path))}")
         
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, **kwargs)
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', **kwargs)
+            logger.debug(f"FFmpeg return code: {proc.returncode}")
+            logger.debug(f"FFmpeg stdout: {proc.stdout}")
+            logger.debug(f"FFmpeg stderr: {proc.stderr}")
+            
             if proc.returncode != 0:
-                error_msg = f"FFmpeg error (return code {proc.returncode}): {proc.stderr.strip()}"
+                stderr_output = proc.stderr.strip() if proc.stderr else "No error message"
+                stdout_output = proc.stdout.strip() if proc.stdout else "No output"
+                error_msg = f"FFmpeg error (return code {proc.returncode}): {stderr_output}"
+                if stdout_output:
+                    error_msg += f" | stdout: {stdout_output}"
                 logger.error(error_msg)
+                logger.debug(f"FFmpeg command that failed: {' '.join(cmd)}")
                 return False, error_msg
         except FileNotFoundError as e:
             error_msg = f"FFmpeg executable not found at {FFMPEG_PATH}: {str(e)}"
@@ -308,8 +350,25 @@ def convert_track(filepath, idx, out_folder, high_quality=True, metadata=None):
             error_msg = f"FFmpeg execution error: {str(e)}"
             logger.error(error_msg)
             return False, error_msg
+        finally:
+            # Clean up temp file if we created one
+            if temp_filepath and os.path.exists(temp_filepath):
+                try:
+                    os.remove(temp_filepath)
+                    logger.debug(f"Cleaned up temp file: {temp_filepath}")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up temp file {temp_filepath}: {e}")
         
-        os.remove(filepath)
+        # Remove original file only if delete_original is True (for downloaded files)
+        if delete_original:
+            try:
+                os.remove(original_filepath)
+                logger.debug(f"Removed original file: {original_filepath}")
+            except Exception as e:
+                logger.warning(f"Failed to remove original file {original_filepath}: {e}")
+        else:
+            logger.debug(f"Preserving original file: {original_filepath}")
+            
         logger.info(f"Successfully converted track {idx} to {out_path}")
         return True, out_path
     except Exception as e:
@@ -400,7 +459,7 @@ class MSCPlaylistGUI:
         self.entry = tk.Entry(row1, width=32, justify="center")
         self.entry.pack(side="left")
         
-        tk.Button(row1, text="From Folder", command=self.convert_folder).pack(side="left", padx=(8, 0))
+        tk.Button(row1, text="Local Audio", command=self.convert_local_files).pack(side="left", padx=(8, 0))
 
         mode_frame = tk.Frame(main_frame)
         mode_frame.pack(anchor="center", pady=(8, 2))
@@ -819,21 +878,32 @@ class MSCPlaylistGUI:
         self.current_thread = threading.Thread(target=task, daemon=True)
         self.current_thread.start()
 
-    def convert_folder(self):
-        folder = filedialog.askdirectory(title="Select folder containing audio files")
-        if not folder:
+    def convert_local_files(self):
+        files = filedialog.askopenfilenames(
+            title="Select audio files to convert",
+            filetypes=[
+                ("Audio files", "*.mp3 *.wav *.ogg *.flac *.aac *.m4a"),
+                ("MP3 files", "*.mp3"),
+                ("WAV files", "*.wav"),
+                ("OGG files", "*.ogg"),
+                ("FLAC files", "*.flac"),
+                ("AAC files", "*.aac"),
+                ("M4A files", "*.m4a"),
+                ("All files", "*.*")
+            ]
+        )
+        if not files:
             return
+            
         out_folder = self.get_output_folder()
         is_cd = self.output_mode_var.get().startswith("CD")
 
-        files = []
-        for fname in sorted(os.listdir(folder)):
-            if fname.lower().endswith((".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a")):
-                files.append(os.path.join(folder, fname))
         total = len(files)
         if total == 0:
-            self.show_error("No supported audio files in selected folder.")
+            self.show_error("No audio files selected.")
             return
+
+        logger.info(f"Converting {total} local audio files to {out_folder}")
 
         if not os.path.isdir(out_folder):
             try:
@@ -865,7 +935,7 @@ class MSCPlaylistGUI:
                         return
                     fname = os.path.basename(localfile)
                     self.safe_after(self.set_current_song, fname, idx, total)
-                    success, result = convert_track(localfile, idx, out_folder, self.high_quality_var.get())
+                    success, result = convert_track(localfile, idx, out_folder, self.high_quality_var.get(), None, delete_original=False)
                     if not success:
                         self.safe_after(self.show_error, result)
                         continue
