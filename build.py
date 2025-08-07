@@ -26,6 +26,11 @@ def main():
         "--add-data", f"{icon_path};.",                      # Include icon file in root
         "--hidden-import=PIL._tkinter_finder",               # Ensure PIL works
         "--collect-all=yt_dlp",                              # Include all yt-dlp dependencies
+        "--exclude-module=tkinter.test",                     # Exclude test modules
+        "--exclude-module=test",                             # Exclude test modules
+        "--exclude-module=unittest",                         # Exclude unittest
+        "--uac-admin",                                       # Request admin rights (helps with AV)
+        "--version-file=version_info.txt",                   # Add version info (if exists)
         "--clean",                                           # Clean PyInstaller cache
         str(main_script)
     ]
