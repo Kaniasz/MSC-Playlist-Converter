@@ -1,44 +1,55 @@
 ## ![Logo](src/resources/icon.png) MSC Playlist Converter
 
-## Overview
-The MSC Playlist Converter is a Python application designed to facilitate the downloading and conversion of audio tracks from YouTube and SoundCloud into a format suitable for use in the game "My Summer Car." The application features a user-friendly graphical interface built with Tkinter.
-
-## Features
-- Download tracks from YouTube and SoundCloud playlists or individual tracks.
-- Convert downloaded audio files into OGG format.
-- Manage output folders for different media types (Radio, CD1, CD2, CD3).
-- Import cover art for CD outputs.
-- Progress tracking and logging for downloads and conversions.
-
-## Requirements
-To run the MSC Playlist Converter, you need to have the following Python packages installed:
-- yt-dlp
-- Pillow
-- Tkinter (usually included with Python installations)
-
-You can install the required packages using pip. Make sure to create a virtual environment for your project:
-
-```bash
-pip install -r requirements.txt
-```
-
-## Installation
-1. Clone the repository or download the source code.
-2. Ensure you have Python installed on your system.
-3. Install the required packages as mentioned above.
-4. Run the application using the following command:
-
-```bash
-python src/MSCPlaylistConverter.py
-```
+### Overview
+MSC Playlist Converter is a Python tool i made using AI designed to simplify the downloading and conversion of audio tracks from YouTube and SoundCloud (Unfortunately no Spotify due to DRM😔) into .ogg files for My Summer Car. The tool uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) for downloading and includes [FFmpeg](https://ffmpeg.org/) for audio conversion.
 
 ## Usage
-1. Open the application.
-2. Enter a YouTube or SoundCloud playlist/track link in the provided input field.
-3. Select the output mode (Radio, CD1, CD2, CD3).
-4. Click on "Start" to begin the download and conversion process.
-5. Monitor the progress and logs displayed in the application.
+1. Open the application
+2. Enter a YouTube or SoundCloud playlist/track link in the input field
+3. Select the output (Radio, CD1, CD2, CD3)
+4. Optionally enable "High Quality" for better audio (High quality .ogg files take a VERY LONG time to import in MSC!)
+5. Click "Start" to begin the download and conversion process
 
-## Output
-The converted audio files will be saved in the designated output folder based on the selected mode. Cover art can also be imported for CD outputs.
-When downloading a single track it will add it to existing ones.
+### Converting Local Files
+- Use the "From Folder" button to select a directory containing audio files
+- All supported audio files in the folder will be converted and added to the selected output
+
+### Output Modes
+- **Radio**: Adds tracks to the car radio folder
+- **CD1/CD2/CD3**: Creates custom CDs with cover art support
+- **Single Track Mode**: When downloading individual tracks, they're added to existing collections
+
+### Supported Formats
+- **Input**: YouTube/SoundCloud URLs, Local audio files via "From Folder" button
+- **File Types**: MP3, WAV, OGG, FLAC, AAC, M4A
+
+## Instalation
+
+### Option 1: Download Executable
+1. Download `MSCPlaylistConverter.exe` from the releases
+2. Run the executable
+
+### Option 2: Compile from Source
+1. **Install Python 3.7 or higher**
+2. **Clone the repository**
+   ```bash
+   git clone https://github.com/Kaniasz/MSC-Playlist-Converter
+   cd MSC-Playlist-Converter
+   ```
+3. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+   (Pyinstaller for building the executable.)
+   ```
+   pip install pyinstaller
+   ```
+4. **To run directly:**
+   ```bash
+   python src/MSCPlaylistConverter.py
+   ```
+5. **To build executable:**
+   ```bash
+   python build.py
+   ```
+   The executable will be created in the `build/` folder
