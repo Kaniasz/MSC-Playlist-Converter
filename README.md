@@ -1,6 +1,7 @@
 <p align="center">
   <img src="src/resources/icon.png" alt="Logo" width="150"/>
 </p>
+
 ## MSC Playlist Converter
 
 ## Overview
