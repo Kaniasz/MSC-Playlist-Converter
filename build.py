@@ -30,7 +30,6 @@ def main():
         "--exclude-module=test",                             # Exclude test modules
         "--exclude-module=unittest",                         # Exclude unittest
         "--uac-admin",                                       # Request admin rights (helps with AV)
-        "--version-file=version_info.txt",                   # Add version info (if exists)
         "--clean",                                           # Clean PyInstaller cache
         str(main_script)
     ]
