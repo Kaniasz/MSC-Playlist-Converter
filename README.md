@@ -5,14 +5,14 @@ MSC Playlist Converter is a Python tool i made using AI designed to simplify the
 
 ## Usage
 1. Open the application
-2. Enter a YouTube or SoundCloud playlist/track link in the input field
+2. Enter a YouTube or SoundCloud playlist/track link in the input field or select local audio files
 3. Select the output (Radio, CD1, CD2, CD3)
 4. Optionally enable "High Quality" for better audio (High quality .ogg files take a VERY LONG time to import in MSC!)
 5. Click "Start" to begin the download and conversion process
 
 ### Converting Local Files
-- Use the "From Folder" button to select a directory containing audio files
-- All supported audio files in the folder will be converted and added to the selected output
+- Use the "Local Audio" button to select audio files
+- All supported audio files will be converted and added to the selected output
 
 ### Output Modes
 - **Radio**: Adds tracks to the car radio folder
@@ -20,7 +20,7 @@ MSC Playlist Converter is a Python tool i made using AI designed to simplify the
 - **Single Track Mode**: When downloading individual tracks, they're added to existing collections
 
 ### Supported Formats
-- **Input**: YouTube/SoundCloud URLs, Local audio files via "From Folder" button
+- **Input**: YouTube/SoundCloud URLs, Local audio files via "Local Audio" button
 - **File Types**: MP3, WAV, OGG, FLAC, AAC, M4A
 
 ## Instalation
