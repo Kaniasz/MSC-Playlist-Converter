@@ -17,10 +17,13 @@ import tempfile
 def setup_logging():
     """Set up logging configuration"""
     # Use the operating system's temporary directory
-    log_dir = os.path.join(tempfile.gettempdir(), 'MSC-Playlist-Converter')
+    app_temp_dir = os.path.join(tempfile.gettempdir(), 'MSC-Playlist-Converter')
+    log_dir = os.path.join(app_temp_dir, 'logs')
     os.makedirs(log_dir, exist_ok=True)
     
-    log_file = os.path.join(log_dir, 'msc_converter.log')
+    # Create a unique log file for each app launch with timestamp
+    timestamp = time.strftime('%Y%m%d_%H%M%S')
+    log_file = os.path.join(log_dir, f'msc_converter_{timestamp}.log')
     
     # Configure logging
     logging.basicConfig(
@@ -34,8 +37,12 @@ def setup_logging():
     
     # Create logger
     logger = logging.getLogger(__name__)
-    logger.info("MSC Playlist Converter started")
+    logger.info("=" * 60)
+    logger.info("MSC Playlist Converter v2.2")
+    logger.info("=" * 60)
+    logger.info("Application started")
     logger.info(f"Log file location: {log_file}")
+    logger.info(f"App temp directory: {app_temp_dir}")
     return logger
 
 logger = setup_logging()
@@ -146,9 +153,18 @@ def get_single_track_info(url):
 def download_track(url, out_path):
     try:
         logger.info(f"Starting download: {url}")
+        
+        # Use the same temp directory as logs for downloads
+        app_temp_dir = os.path.join(tempfile.gettempdir(), 'MSC-Playlist-Converter')
+        download_temp_dir = os.path.join(app_temp_dir, 'downloads')
+        os.makedirs(download_temp_dir, exist_ok=True)
+        
+        # Create temp download path in our app temp directory
+        temp_download_path = os.path.join(download_temp_dir, os.path.basename(out_path))
+        
         ydl_opts = {
             'format': 'bestaudio/best',
-            'outtmpl': out_path + '.%(ext)s',
+            'outtmpl': temp_download_path + '.%(ext)s',
             'noplaylist': True,
             'quiet': True,
             'forcejson': True,
@@ -266,43 +282,46 @@ def convert_track(filepath, idx, out_folder, high_quality=True, metadata=None, d
             logger.error(error_msg)
             return False, error_msg
         
-        # Check for problematic characters and create safe temp file if needed
-        problematic_chars = ['⧸', '：', 'ᴙ', '⟨', '⟩', '[', ']', '(', ')', '&', '%', '!', '@', '#', '$', '^', '*', '+', '=', '{', '}', '|', '\\', ':', ';', '"', "'", '<', '>', ',', '?', '`', '~']
+        # Always create safe temp file for conversion to avoid any path issues
+        problematic_chars = ['/', 'ᴙ', '<', '>', '[', ']', '(', ')', '&', '%', '!', '@', '#', '$', '^', '*', '+', '=', '{', '}', '|', '\\', ':', ';', '"', "'", '<', '>', ',', '?', '`', '~']
         original_filepath = filepath
         temp_filepath = None
         
-        if any(char in filepath for char in problematic_chars):
-            logger.warning(f"File path contains potentially problematic characters, creating safe temp copy")
-            import tempfile
-            import shutil
-            
-            # Get file extension
-            _, ext = os.path.splitext(filepath)
-            
-            # Create temp file with safe name
-            temp_fd, temp_filepath = tempfile.mkstemp(suffix=ext, prefix=f"msc_temp_{idx}_")
-            os.close(temp_fd)  # Close the file descriptor
-            
-            try:
-                shutil.copy2(filepath, temp_filepath)
-                filepath = temp_filepath
-                logger.debug(f"Created safe temp copy: {temp_filepath}")
-            except Exception as e:
-                logger.error(f"Failed to create temp copy: {e}")
-                if temp_filepath and os.path.exists(temp_filepath):
-                    os.remove(temp_filepath)
-                return False, f"Failed to create temp copy: {e}"
+        # Always use temp file for better compatibility
+        import shutil
+        
+        # Use the same temp directory as logs for temp file operations
+        app_temp_dir = os.path.join(tempfile.gettempdir(), 'MSC-Playlist-Converter')
+        temp_files_dir = os.path.join(app_temp_dir, 'temp_files')
+        os.makedirs(temp_files_dir, exist_ok=True)
+        
+        # Get file extension
+        _, ext = os.path.splitext(filepath)
+        
+        # Create temp file with safe name in our app temp directory
+        temp_fd, temp_filepath = tempfile.mkstemp(suffix=ext, prefix=f"msc_temp_{idx}_", dir=temp_files_dir)
+        os.close(temp_fd)  # Close the file descriptor
+        
+        try:
+            shutil.copy2(filepath, temp_filepath)
+            filepath = temp_filepath
+            logger.debug(f"Created safe temp copy: {temp_filepath}")
+        except Exception as e:
+            logger.error(f"Failed to create temp copy: {e}")
+            if temp_filepath and os.path.exists(temp_filepath):
+                os.remove(temp_filepath)
+            return False, f"Failed to create temp copy: {e}"
         
         ext = ".ogg"
         fname = f"track{idx}{ext}"
         out_path = os.path.join(out_folder, fname)
         
         if high_quality:
-            audio_args = ['-ab', '320k']
-            logger.debug(f"Using high quality settings for track {idx}")
+            audio_args = ['-ab', '320k', '-ar', '48000']  # Resample to 48kHz for compatibility
+            logger.info(f"*** HIGH QUALITY MODE *** Converting track {idx} at 320k bitrate, 48kHz sample rate")
         else:
             audio_args = ['-ab', '96k', '-ac', '2', '-ar', '22050']
-            logger.debug(f"Using standard quality settings for track {idx}")
+            logger.info(f"Standard quality mode - Converting track {idx} at 96k bitrate, 22kHz sample rate")
         
         cmd = [
             FFMPEG_PATH,
@@ -458,6 +477,7 @@ class MSCPlaylistGUI:
         self.link_label.pack(side="left", padx=(0, 3))
         self.entry = tk.Entry(row1, width=32, justify="center")
         self.entry.pack(side="left")
+        self.entry.bind('<Button-1>', self.on_entry_click)  # Clear local files when clicking entry
         
         tk.Button(row1, text="Local Audio", command=self.convert_local_files).pack(side="left", padx=(8, 0))
 
@@ -469,8 +489,6 @@ class MSCPlaylistGUI:
         self.cover_path_var = tk.StringVar(value="")
         self.coverart_btn = tk.Button(mode_frame, text="Import Coverart", command=self.import_coverart)
         self.coverart_btn.pack(side="left", padx=(8,0))
-        self.coverart_thumbnail = tk.Label(mode_frame)
-        self.coverart_thumbnail.pack(side="left", padx=(4,0))
         self.high_quality_var = tk.BooleanVar(value=False)
         self.high_quality_checkbox = tk.Checkbutton(mode_frame, text="High Quality", variable=self.high_quality_var)
         self.high_quality_checkbox.pack(side="left", padx=(8, 0))
@@ -537,6 +555,7 @@ class MSCPlaylistGUI:
 
         self.playlist = []
         self.thumbnail_path = None
+        self.local_files = []  # Store selected local files
         self.update_cd_controls()
         
         # Bind F8 key to open log folder
@@ -547,7 +566,14 @@ class MSCPlaylistGUI:
         is_cd = self.output_mode_var.get().startswith("CD")
         state = "normal" if is_cd else "disabled"
         self.coverart_btn.config(state=state)
-        self.coverart_thumbnail.config(state=state)
+
+    def on_entry_click(self, event):
+        """Clear local files selection when user clicks on entry field"""
+        if hasattr(self, 'local_files') and self.local_files:
+            self.local_files = []
+            self.entry.config(state='normal')
+            self.entry.delete(0, tk.END)
+            logger.info("Cleared local files selection - ready for URL input")
 
     def show_output_folder_tooltip(self, event):
         path = self.get_output_folder()
@@ -578,17 +604,6 @@ class MSCPlaylistGUI:
         if not path:
             return
         self.cover_path_var.set(path)
-        self.update_coverart_thumbnail(path)
-
-    def update_coverart_thumbnail(self, path):
-        try:
-            img = Image.open(path)
-            img.thumbnail((32,32))
-            img_tk = ImageTk.PhotoImage(img)
-            self.coverart_thumbnail.configure(image=img_tk)
-            self.coverart_thumbnail.image = img_tk
-        except Exception:
-            self.coverart_thumbnail.configure(image="")
 
     def safe_after(self, func, *args, **kwargs):
         if self.cancel_flag.is_set():
@@ -667,7 +682,8 @@ class MSCPlaylistGUI:
 
     def open_log_folder(self):
         """Open the log folder in the file explorer (triggered by F8 key)"""
-        log_dir = os.path.join(tempfile.gettempdir(), 'MSC-Playlist-Converter')
+        app_temp_dir = os.path.join(tempfile.gettempdir(), 'MSC-Playlist-Converter')
+        log_dir = os.path.join(app_temp_dir, 'logs')
         if not os.path.isdir(log_dir):
             os.makedirs(log_dir, exist_ok=True)
         
@@ -698,10 +714,17 @@ class MSCPlaylistGUI:
         is_cd = self.output_mode_var.get().startswith("CD")
         
         logger.info(f"Starting download process. URL: {url}, Output: {out_folder}, CD mode: {is_cd}")
+        logger.info(f"High Quality Audio: {'ENABLED (320k, 48kHz)' if self.high_quality_var.get() else 'DISABLED (96k, 22kHz)'}")
 
         urls_to_dl = []
+        local_files_to_convert = []
         single_track = False
-        if url:
+        
+        # Check if we have local files selected
+        if hasattr(self, 'local_files') and self.local_files and "[" in url and "local files selected]" in url:
+            local_files_to_convert = self.local_files
+            logger.info(f"Processing {len(local_files_to_convert)} selected local files")
+        elif url:
             if is_youtube_track(url) or is_soundcloud_track(url):
                 urls_to_dl = get_single_track_info(url)
                 single_track = True
@@ -717,9 +740,9 @@ class MSCPlaylistGUI:
                 self.show_error("Invalid link. Please enter a SoundCloud/YouTube link.")
                 return
 
-        total = len(urls_to_dl)
+        total = len(urls_to_dl) + len(local_files_to_convert)
         if total == 0:
-            self.show_error("No songs to process. Please enter a link or use the From Folder button.")
+            self.show_error("No songs to process. Please enter a link or use the Local Audio button.")
             return
 
         if not os.path.isdir(out_folder):
@@ -762,6 +785,7 @@ class MSCPlaylistGUI:
 
             eta_thread = None
             try:
+                # Process URLs first (if any)
                 for idx, media_url in enumerate(urls_to_dl, 1):
                     start_download = time.time()
                     if self.cancel_flag.is_set():
@@ -830,35 +854,56 @@ class MSCPlaylistGUI:
                         eta_thread = threading.Thread(target=eta_countdown, daemon=True)
                         eta_thread.start()
                     if is_cd and not coverart_done and not coverart_path and thumbnail:
-                        thumb_path = os.path.join(out_folder, "coverart.jpg")
+                        # Use app temp directory for thumbnail downloads
+                        app_temp_dir = os.path.join(tempfile.gettempdir(), 'MSC-Playlist-Converter')
+                        thumb_temp_dir = os.path.join(app_temp_dir, 'thumbnails')
+                        os.makedirs(thumb_temp_dir, exist_ok=True)
+                        thumb_path = os.path.join(thumb_temp_dir, f"coverart_{idx}.png")
                         try:
                             import urllib.request
                             urllib.request.urlretrieve(thumbnail, thumb_path)
-                            self.safe_after(self.update_coverart_thumbnail, thumb_path)
                             coverart_path = thumb_path
                             coverart_done = True
                         except Exception:
                             pass
                     self.safe_after(self.set_progress, idx, total)
 
+                # Process local files (if any)
+                start_idx = len(urls_to_dl)
+                for file_idx, localfile in enumerate(local_files_to_convert, 1):
+                    idx = start_idx + file_idx
+                    if self.cancel_flag.is_set():
+                        self.safe_after(self.set_status, "Cancelled")
+                        self.safe_after(self.download_button.config, state='normal')
+                        self.safe_after(self.cancel_button.config, state='disabled')
+                        return
+                    fname = os.path.basename(localfile)
+                    self.safe_after(self.set_current_song, fname, idx, total)
+                    success, result = convert_track(localfile, idx, out_folder, self.high_quality_var.get(), None, delete_original=False)
+                    if not success:
+                        self.safe_after(self.show_error, result)
+                        continue
+                    files.append(result)
+                    self.safe_after(self.set_progress, idx, total)
+
                 stop_eta.set()
                 self.safe_after(self.eta_var.set, "ETA: --:--")
-                if is_cd:
-                    coverart_final = os.path.join(out_folder, "cd.png")
-                    if coverart_path:
-                        try:
-                            img = Image.open(coverart_path)
-                            img = img.resize((512,512))
-                            img.save(coverart_final)
-                            self.safe_after(self.update_coverart_thumbnail, coverart_final)
-                        except Exception:
-                            pass
-                    else:
-                        img = Image.new("RGB", (512,512), (30,30,30))
+                if is_cd and coverart_path:
+                    coverart_final = os.path.join(out_folder, "coverart.png")
+                    try:
+                        img = Image.open(coverart_path)
+                        img = img.resize((512,512))
                         img.save(coverart_final)
-                        self.safe_after(self.update_coverart_thumbnail, coverart_final)
+                    except Exception:
+                        pass
 
                 self.safe_after(self.clear_current_song)
+                # Clear local files selection after processing
+                if local_files_to_convert:
+                    self.local_files = []
+                    self.safe_after(self.entry.config, state='normal')
+                    self.safe_after(self.entry.delete, 0, tk.END)
+                    
                 if self.cancel_flag.is_set():
                     self.safe_after(self.set_status, "Cancelled")
                 elif files:
@@ -895,84 +940,18 @@ class MSCPlaylistGUI:
         if not files:
             return
             
-        out_folder = self.get_output_folder()
-        is_cd = self.output_mode_var.get().startswith("CD")
-
-        total = len(files)
-        if total == 0:
-            self.show_error("No audio files selected.")
-            return
-
-        logger.info(f"Converting {total} local audio files to {out_folder}")
-
-        if not os.path.isdir(out_folder):
-            try:
-                os.makedirs(out_folder)
-            except Exception:
-                self.show_error(f"Output folder not found and could not be created:\n{out_folder}")
-                return
-
-        if not confirm_and_clean_radio_folder(self.master, out_folder):
-            self.show_error("Aborted by user (output folder not cleaned).")
-            return
-
-        self.progress['value'] = 0
-        self.set_status("Processing ...")
-        self.clear_current_song()
-        self.download_button.config(state='disabled')
-        self.cancel_button.config(state='normal')
-        self.cancel_flag.clear()
-
-        def task():
-            processed_files = []
-            coverart_path = self.cover_path_var.get()
-            try:
-                for idx, localfile in enumerate(files, 1):
-                    if self.cancel_flag.is_set():
-                        self.safe_after(self.set_status, "Cancelled")
-                        self.safe_after(self.download_button.config, state='normal')
-                        self.safe_after(self.cancel_button.config, state='disabled')
-                        return
-                    fname = os.path.basename(localfile)
-                    self.safe_after(self.set_current_song, fname, idx, total)
-                    success, result = convert_track(localfile, idx, out_folder, self.high_quality_var.get(), None, delete_original=False)
-                    if not success:
-                        self.safe_after(self.show_error, result)
-                        continue
-                    processed_files.append(result)
-                    self.safe_after(self.set_progress, idx, total)
-                if is_cd:
-                    coverart_final = os.path.join(out_folder, "cd.png")
-                    if coverart_path:
-                        try:
-                            img = Image.open(coverart_path)
-                            img = img.resize((512,512))
-                            img.save(coverart_final)
-                            self.safe_after(self.update_coverart_thumbnail, coverart_final)
-                        except Exception:
-                            pass
-                    else:
-                        img = Image.new("RGB", (512,512), (30,30,30))
-                        img.save(coverart_final)
-                        self.safe_after(self.update_coverart_thumbnail, coverart_final)
-
-                self.safe_after(self.clear_current_song)
-                if self.cancel_flag.is_set():
-                    self.safe_after(self.set_status, "Cancelled")
-                elif processed_files:
-                    self.safe_after(self.show_success, processed_files)
-                else:
-                    self.safe_after(self.show_error, "No songs processed.")
-                self.safe_after(self.cancel_button.config, state='disabled')
-            except Exception as e:
-                self.safe_after(self.show_error, str(e))
-                self.safe_after(self.set_status, "Waiting")
-                self.safe_after(self.cancel_button.config, state='disabled')
-            finally:
-                self.safe_after(self.download_button.config, state='normal')
-
-        self.current_thread = threading.Thread(target=task, daemon=True)
-        self.current_thread.start()
+        # Store the selected files for processing when Start button is pressed
+        self.local_files = files
+        
+        # Clear the URL entry and update the UI to show selected files
+        self.entry.delete(0, tk.END)
+        self.entry.insert(0, f"[{len(files)} local files selected]")
+        self.entry.config(state='readonly')
+        
+        logger.info(f"Selected {len(files)} local audio files for conversion")
+        
+        # Enable the start button
+        self.download_button.config(state='normal')
 
     def cancel_download(self):
         self.cancel_flag.set()
