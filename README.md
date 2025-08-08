@@ -1,7 +1,7 @@
 ## ![Logo](src/resources/icon.png) MSC Playlist Converter
 
 ### Overview
-MSC Playlist Converter is a Python tool i made using AI designed to simplify the downloading and conversion of audio tracks from YouTube and SoundCloud (Unfortunately no Spotify due to DRM restrictions😔) into .ogg files for My Summer Car. The tool uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) for downloading and includes [FFmpeg](https://ffmpeg.org/) for audio conversion.
+MSC Playlist Converter is a Python tool I made using AI designed to simplify the downloading and conversion of audio tracks from YouTube and SoundCloud (Unfortunately no Spotify due to DRM restrictions😔) into .ogg files for My Summer Car. The tool uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) for downloading and includes [FFmpeg](https://ffmpeg.org/) for audio conversion.
 
 ## Usage
 1. Open the application
