@@ -2,52 +2,99 @@ import os
 import sys
 import threading
 import subprocess
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-from tkinter.scrolledtext import ScrolledText
-import yt_dlp
-import re
-from PIL import Image, ImageTk
 import time
 import logging
 import urllib.parse
 import tempfile
+import re
+import shutil
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+from tkinter.scrolledtext import ScrolledText
+import yt_dlp
+from PIL import Image
 
-# Set up logging
+try:
+    import winreg
+except ImportError:
+    winreg = None
+
+# Application constants
+APP_VERSION = "2.3"
+
+# Audio encoding settings
+HIGH_QUALITY_BITRATE = "320k"
+HIGH_QUALITY_SAMPLE_RATE = "48000"
+STANDARD_QUALITY_BITRATE = "96k"
+STANDARD_QUALITY_SAMPLE_RATE = "22050"
+STANDARD_QUALITY_CHANNELS = "2"
+
+# Audio normalization parameters
+NORMALIZATION_LOUDNESS = "-18"
+NORMALIZATION_LRA = "11"
+NORMALIZATION_TRUE_PEAK = "-1.5"
+
+# yt-dlp configuration presets
+BASE_YDL_OPTS = {
+    'quiet': True,
+    'no_warnings': True,
+}
+
+EXTRACT_OPTS = {
+    **BASE_YDL_OPTS,
+    'extract_flat': True,
+    'skip_download': True,
+    'forcejson': True,
+}
+
+DOWNLOAD_OPTS = {
+    **BASE_YDL_OPTS,
+    'format': 'bestaudio/best',
+    'noplaylist': True,
+    'forcejson': True,
+}
+
+SEARCH_OPTS = {
+    **BASE_YDL_OPTS,
+    'extract_flat': True,
+}
+
+# SoundCloud region-lock detection (preview track duration range in seconds)
+REGION_LOCK_MIN_DURATION = 29
+REGION_LOCK_MAX_DURATION = 31
+
+# Centralized temporary directory path
+APP_TEMP_DIR = os.path.join(tempfile.gettempdir(), 'MSC-Playlist-Converter')
+
 def setup_logging():
-    """Set up logging configuration"""
-    # Use the operating system's temporary directory
-    app_temp_dir = os.path.join(tempfile.gettempdir(), 'MSC-Playlist-Converter')
-    log_dir = os.path.join(app_temp_dir, 'logs')
+    """Initialize logging system with timestamped log files."""
+    log_dir = os.path.join(APP_TEMP_DIR, 'logs')
     os.makedirs(log_dir, exist_ok=True)
     
-    # Create a unique log file for each app launch with timestamp
     timestamp = time.strftime('%Y%m%d_%H%M%S')
     log_file = os.path.join(log_dir, f'msc_converter_{timestamp}.log')
     
-    # Configure logging
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
             logging.FileHandler(log_file, encoding='utf-8'),
-            logging.StreamHandler()  # Also log to console
+            logging.StreamHandler()
         ]
     )
     
-    # Create logger
     logger = logging.getLogger(__name__)
-    logger.info("=" * 60)
-    logger.info("MSC Playlist Converter v2.2")
-    logger.info("=" * 60)
+    logger.info(f"MSC Playlist Converter")
+    logger.info(f"App Version: v{APP_VERSION}")
     logger.info("Application started")
     logger.info(f"Log file location: {log_file}")
-    logger.info(f"App temp directory: {app_temp_dir}")
+    logger.info(f"App temp directory: {APP_TEMP_DIR}")
     return logger
 
 logger = setup_logging()
 
 def resource_path(relative_path):
+    """Get absolute path to resource file."""
     try:
         base_path = sys._MEIPASS
     except Exception:
@@ -55,8 +102,11 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 def get_steam_path():
+    """Retrieve Steam installation path from Windows registry."""
+    if winreg is None:
+        return r"C:\Program Files (x86)\Steam"
+    
     try:
-        import winreg
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam")
         steam_path, _ = winreg.QueryValueEx(key, "SteamPath")
         winreg.CloseKey(key)
@@ -64,10 +114,11 @@ def get_steam_path():
         return steam_path
     except Exception as e:
         default_path = r"C:\Program Files (x86)\Steam"
-        logger.warning(f"Could not find Steam path in registry, using default: {default_path}. Error: {e}")
+        logger.warning(f"Registry lookup failed, using default: {default_path}")
         return default_path
 
 def get_steam_libraries(steam_path):
+    """Parse Steam library folders from libraryfolders.vdf file."""
     library_paths = [os.path.join(steam_path, "steamapps")]
     vdf_path = os.path.join(steam_path, "steamapps", "libraryfolders.vdf")
     if not os.path.isfile(vdf_path):
@@ -85,6 +136,7 @@ def get_steam_libraries(steam_path):
     return library_paths
 
 def find_msc_install_path():
+    """Locate My Summer Car installation directory across Steam libraries."""
     steam_path = get_steam_path()
     libraries = get_steam_libraries(steam_path)
     logger.info(f"Searching for My Summer Car in {len(libraries)} Steam libraries")
@@ -96,7 +148,7 @@ def find_msc_install_path():
             return msc_dir
     
     default_path = r"C:\Program Files (x86)\Steam\steamapps\common\My Summer Car"
-    logger.warning(f"My Summer Car not found in Steam libraries, using default path: {default_path}")
+    logger.warning(f"My Summer Car not found, using default path: {default_path}")
     return default_path
 
 DEFAULT_MSC_PATH = find_msc_install_path()
@@ -108,66 +160,72 @@ CD_SLOT_MAP = {
     "CD3": "CD3",
 }
 
+def format_file_size_with_extension(filepath):
+    """Format file size in human-readable format with extension for privacy logging."""
+    try:
+        size_bytes = os.path.getsize(filepath)
+        if size_bytes >= 1024 * 1024:
+            size_str = f"{size_bytes / (1024 * 1024):.1f}MB"
+        elif size_bytes >= 1024:
+            size_str = f"{size_bytes / 1024:.1f}KB"
+        else:
+            size_str = f"{size_bytes}B"
+        _, ext = os.path.splitext(filepath)
+        return f"{size_str}{ext}"
+    except (OSError, TypeError):
+        _, ext = os.path.splitext(filepath)
+        return f"unknown_size{ext}"
+
 def is_youtube_playlist(url):
+    """Check if URL points to a YouTube playlist."""
     return ("youtube.com/playlist" in url or "youtu.be/playlist" in url or
             ("youtube.com" in url and "list=" in url))
 
 def is_soundcloud_playlist(url):
+    """Check if URL points to a SoundCloud playlist/set."""
     return "soundcloud.com" in url and "sets" in url
 
 def is_youtube_track(url):
+    """Check if URL points to a single YouTube video."""
     return ("youtu.be/" in url or "youtube.com/watch" in url) and not is_youtube_playlist(url)
 
 def is_soundcloud_track(url):
+    """Check if URL points to a single SoundCloud track."""
     return "soundcloud.com" in url and not is_soundcloud_playlist(url)
 
 def get_soundcloud_playlist_tracks(url):
-    ydl_opts = {
-        'quiet': True,
-        'extract_flat': True,
-        'skip_download': True,
-        'forcejson': True,
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    """Extract track URLs from a SoundCloud playlist."""
+    with yt_dlp.YoutubeDL(EXTRACT_OPTS) as ydl:
         info = ydl.extract_info(url, download=False)
         if "entries" in info and info["entries"]:
             return [entry["url"] for entry in info["entries"] if "url" in entry]
     return []
 
 def get_youtube_playlist_videos(playlist_url):
-    ydl_opts = {
-        'quiet': True,
-        'extract_flat': True,
-        'skip_download': True,
-        'forcejson': True,
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    """Extract video URLs from a YouTube playlist."""
+    with yt_dlp.YoutubeDL(EXTRACT_OPTS) as ydl:
         info = ydl.extract_info(playlist_url, download=False)
         if "entries" in info and info["entries"]:
             return [f"https://www.youtube.com/watch?v={entry['id']}" for entry in info["entries"]]
     return []
 
 def get_single_track_info(url):
+    """Wrap single track URL in list format for uniform processing."""
     return [url]
 
 def download_track(url, out_path):
+    """Download audio track with YouTube fallback for region-locked content."""
     try:
         logger.info(f"Starting download: {url}")
         
-        # Use the same temp directory as logs for downloads
-        app_temp_dir = os.path.join(tempfile.gettempdir(), 'MSC-Playlist-Converter')
-        download_temp_dir = os.path.join(app_temp_dir, 'downloads')
+        download_temp_dir = os.path.join(APP_TEMP_DIR, 'downloads')
         os.makedirs(download_temp_dir, exist_ok=True)
         
-        # Create temp download path in our app temp directory
         temp_download_path = os.path.join(download_temp_dir, os.path.basename(out_path))
         
         ydl_opts = {
-            'format': 'bestaudio/best',
+            **DOWNLOAD_OPTS,
             'outtmpl': temp_download_path + '.%(ext)s',
-            'noplaylist': True,
-            'quiet': True,
-            'forcejson': True,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -178,76 +236,63 @@ def download_track(url, out_path):
         
         title = info.get('title') or os.path.basename(filepath)
         
-        # Check if the download is region-locked (SoundCloud previews are typically 28-32 seconds)
+        # Detect region-locked SoundCloud previews by duration
         duration = info.get('duration')
-        if duration and 28 < duration < 32 and "soundcloud.com" in url.lower():
-            logger.warning(f"Download appears to be region-locked preview (duration: {duration}s): {title}")
+        if duration and REGION_LOCK_MIN_DURATION < duration < REGION_LOCK_MAX_DURATION and "soundcloud.com" in url.lower():
+            logger.warning(f"Region-locked preview detected (duration: {duration}s): {title}")
             
-            # Try to find and download from YouTube as fallback
-            logger.info(f"Attempting YouTube fallback for SoundCloud preview track: {title}")
+            # Attempt YouTube fallback for region-locked content
+            logger.info(f"Attempting YouTube fallback for: {title}")
             youtube_url = search_youtube_fallback(title, info.get('uploader'))
             if youtube_url:
-                logger.info(f"Found YouTube alternative: {youtube_url} - Re-downloading...")
-                # Remove the preview file
+                logger.info(f"Found YouTube alternative: {youtube_url}")
                 try:
                     if os.path.exists(filepath):
                         os.remove(filepath)
                 except:
                     pass
-                # Recursively call download_track with YouTube URL
                 return download_track(youtube_url, out_path)
             else:
                 logger.warning(f"No YouTube fallback found for: {title}")
-                # Keep the original error behavior for when fallback fails
                 return None, None, None
         logger.info(f"Successfully downloaded: {title}")
         return filepath, title, thumbnail
     except Exception as e:
-        logger.error(f"Failed to download {url}: {e}")
+        logger.error(f"Download failed for {url}: {e}")
         return None, None, None
 
 def search_youtube_fallback(title, artist=None):
-    """Search for a song on YouTube when SoundCloud fails"""
+    """Search YouTube for alternative version of region-locked track."""
     try:
         logger.info(f"Searching YouTube fallback for: {title} by {artist}")
         
-        # Try different search strategies
+        # Build search query variations for better match probability
         search_queries = []
         
         if artist:
-            # Strategy 1: Artist - Title
-            search_queries.append(f"{artist} - {title}")
-            # Strategy 2: Artist Title (without dash)
-            search_queries.append(f"{artist} {title}")
-            # Strategy 3: Just title and artist
-            search_queries.append(f"{title} {artist}")
+            search_queries.extend([
+                f"{artist} - {title}",
+                f"{artist} {title}",
+                f"{title} {artist}",
+                f"{artist} {title} audio",
+                f"{artist} {title} song"
+            ])
         
-        # Strategy 4: Just the title
-        search_queries.append(title)
+        search_queries.extend([
+            title,
+            f"{title} audio",
+            f"{title} song"
+        ])
         
-        # Strategy 5: Add "audio" or "song" to help find music
-        if artist:
-            search_queries.append(f"{artist} {title} audio")
-            search_queries.append(f"{artist} {title} song")
-        else:
-            search_queries.append(f"{title} audio")
-            search_queries.append(f"{title} song")
-        
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': True,
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(SEARCH_OPTS) as ydl:
             for query in search_queries:
                 try:
-                    # Clean up the query
-                    clean_query = re.sub(r'\s*\(.*?\)\s*$', '', query)  # Remove (Official Audio), etc.
-                    clean_query = re.sub(r'\s*\[.*?\]\s*$', '', clean_query)  # Remove [Bass Boosted], etc.
+                    # Remove common suffixes that might interfere with search
+                    clean_query = re.sub(r'\s*\(.*?\)\s*$', '', query)
+                    clean_query = re.sub(r'\s*\[.*?\]\s*$', '', clean_query)
                     
-                    logger.debug(f"Trying YouTube search query: {clean_query}")
-                    search_url = f"ytsearch3:{clean_query}"  # Search top 3 results
+                    logger.debug(f"Searching YouTube: {clean_query}")
+                    search_url = f"ytsearch3:{clean_query}"
                     
                     search_results = ydl.extract_info(search_url, download=False)
                     
@@ -257,11 +302,11 @@ def search_youtube_fallback(title, artist=None):
                                 video_id = entry['id']
                                 youtube_url = f"https://www.youtube.com/watch?v={video_id}"
                                 video_title = entry.get('title', 'Unknown')
-                                logger.info(f"Found YouTube fallback: {video_title}")
+                                logger.info(f"Found YouTube match: {video_title}")
                                 return youtube_url
                     
                 except Exception as e:
-                    logger.debug(f"Search query '{query}' failed: {e}")
+                    logger.debug(f"Search failed for '{query}': {e}")
                     continue
         
         logger.warning(f"No YouTube fallback found for: {title} by {artist}")
@@ -271,41 +316,66 @@ def search_youtube_fallback(title, artist=None):
         logger.error(f"YouTube fallback search failed: {e}")
         return None
 
-def convert_track(filepath, idx, out_folder, high_quality=True, metadata=None, delete_original=True):
+def build_ffmpeg_command(filepath, out_path, high_quality, normalize_audio, metadata=None):
+    """Construct FFmpeg command with quality and normalization settings."""
+    if high_quality:
+        audio_args = ['-ab', HIGH_QUALITY_BITRATE, '-ar', HIGH_QUALITY_SAMPLE_RATE]
+    else:
+        audio_args = ['-ab', STANDARD_QUALITY_BITRATE, '-ac', STANDARD_QUALITY_CHANNELS, '-ar', STANDARD_QUALITY_SAMPLE_RATE]
+    
+    cmd = [
+        FFMPEG_PATH,
+        '-y',
+        '-i', filepath,
+        '-vn',  # Skip video streams
+        '-c:a', 'libvorbis',  # Force Vorbis codec
+    ]
+    
+    if normalize_audio:
+        cmd += ['-af', f'loudnorm=I={NORMALIZATION_LOUDNESS}:LRA={NORMALIZATION_LRA}:TP={NORMALIZATION_TRUE_PEAK}']
+    
+    if metadata:
+        for k, v in metadata.items():
+            if v:
+                cmd += ['-metadata', f'{k}={v}']
+    
+    cmd += [*audio_args, out_path]
+    return cmd
+
+def create_safe_temp_file(filepath, idx):
+    """Generate secure temporary file for audio conversion."""
+    temp_files_dir = os.path.join(APP_TEMP_DIR, 'temp_files')
+    os.makedirs(temp_files_dir, exist_ok=True)
+    
+    _, ext = os.path.splitext(filepath)
+    
+    temp_fd, temp_filepath = tempfile.mkstemp(
+        suffix=ext, 
+        prefix=f"msc_temp_{idx}_", 
+        dir=temp_files_dir
+    )
+    os.close(temp_fd)
+    return temp_filepath
+
+def convert_track(filepath, idx, out_folder, high_quality=True, metadata=None, delete_original=True, normalize_audio=False):
     try:
-        logger.info(f"Converting track {idx}: {os.path.basename(filepath)}")
-        logger.debug(f"FFmpeg path being used: {FFMPEG_PATH}")
-        logger.debug(f"FFmpeg path exists: {os.path.exists(FFMPEG_PATH)}")
+        logger.info(f"Converting track {idx}: {format_file_size_with_extension(filepath)}")
+        logger.debug(f"FFmpeg path: {FFMPEG_PATH}")
+        logger.debug(f"FFmpeg exists: {os.path.exists(FFMPEG_PATH)}")
         
         if not os.path.isfile(filepath):
             error_msg = f"Input file does not exist: {filepath}"
             logger.error(error_msg)
             return False, error_msg
         
-        # Always create safe temp file for conversion to avoid any path issues
-        problematic_chars = ['/', 'ᴙ', '<', '>', '[', ']', '(', ')', '&', '%', '!', '@', '#', '$', '^', '*', '+', '=', '{', '}', '|', '\\', ':', ';', '"', "'", '<', '>', ',', '?', '`', '~']
+        # Create secure temporary copy for processing
         original_filepath = filepath
-        temp_filepath = None
-        
-        # Always use temp file for better compatibility
-        import shutil
-        
-        # Use the same temp directory as logs for temp file operations
-        app_temp_dir = os.path.join(tempfile.gettempdir(), 'MSC-Playlist-Converter')
-        temp_files_dir = os.path.join(app_temp_dir, 'temp_files')
-        os.makedirs(temp_files_dir, exist_ok=True)
-        
-        # Get file extension
-        _, ext = os.path.splitext(filepath)
-        
-        # Create temp file with safe name in our app temp directory
-        temp_fd, temp_filepath = tempfile.mkstemp(suffix=ext, prefix=f"msc_temp_{idx}_", dir=temp_files_dir)
-        os.close(temp_fd)  # Close the file descriptor
+        temp_filepath = create_safe_temp_file(filepath, idx)
         
         try:
             shutil.copy2(filepath, temp_filepath)
             filepath = temp_filepath
-            logger.debug(f"Created safe temp copy: {temp_filepath}")
+            logger.debug(f"Created temp copy: {format_file_size_with_extension(temp_filepath)}")
         except Exception as e:
             logger.error(f"Failed to create temp copy: {e}")
             if temp_filepath and os.path.exists(temp_filepath):
@@ -316,33 +386,16 @@ def convert_track(filepath, idx, out_folder, high_quality=True, metadata=None, d
         fname = f"track{idx}{ext}"
         out_path = os.path.join(out_folder, fname)
         
-        if high_quality:
-            audio_args = ['-ab', '320k', '-ar', '48000']  # Resample to 48kHz for compatibility
-            logger.info(f"*** HIGH QUALITY MODE *** Converting track {idx} at 320k bitrate, 48kHz sample rate")
-        else:
-            audio_args = ['-ab', '96k', '-ac', '2', '-ar', '22050']
-            logger.info(f"Standard quality mode - Converting track {idx} at 96k bitrate, 22kHz sample rate")
-        
-        cmd = [
-            FFMPEG_PATH,
-            '-y',
-            '-i', filepath,
-            '-vn',  # Disable video processing (ignore album art)
-            '-c:a', 'libvorbis',  # Explicitly use Vorbis audio codec
-        ]
-        if metadata:
-            for k, v in metadata.items():
-                if v:
-                    cmd += ['-metadata', f'{k}={v}']
-        cmd += [*audio_args, out_path]
+        # Build FFmpeg command
+        cmd = build_ffmpeg_command(filepath, out_path, high_quality, normalize_audio, metadata)
         
         kwargs = {}
         if sys.platform == "win32":
             kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
         
         logger.debug(f"FFmpeg command: {' '.join(cmd)}")
-        logger.debug(f"Input file path: {filepath}")
-        logger.debug(f"Output file path: {out_path}")
+        logger.debug(f"Input file: {format_file_size_with_extension(filepath)}")
+        logger.debug(f"Output file: {format_file_size_with_extension(out_path) if os.path.exists(out_path) else os.path.basename(out_path)}")
         logger.debug(f"Input file exists: {os.path.exists(filepath)}")
         logger.debug(f"Output directory exists: {os.path.exists(os.path.dirname(out_path))}")
         
@@ -374,21 +427,21 @@ def convert_track(filepath, idx, out_folder, high_quality=True, metadata=None, d
             if temp_filepath and os.path.exists(temp_filepath):
                 try:
                     os.remove(temp_filepath)
-                    logger.debug(f"Cleaned up temp file: {temp_filepath}")
+                    logger.debug(f"Cleaned up temp file: {format_file_size_with_extension(temp_filepath)}")
                 except Exception as e:
-                    logger.warning(f"Failed to clean up temp file {temp_filepath}: {e}")
+                    logger.warning(f"Failed to clean up temp file {format_file_size_with_extension(temp_filepath)}: {e}")
         
         # Remove original file only if delete_original is True (for downloaded files)
         if delete_original:
             try:
                 os.remove(original_filepath)
-                logger.debug(f"Removed original file: {original_filepath}")
+                logger.debug(f"Removed original file: {format_file_size_with_extension(original_filepath)}")
             except Exception as e:
-                logger.warning(f"Failed to remove original file {original_filepath}: {e}")
+                logger.warning(f"Failed to remove original file {format_file_size_with_extension(original_filepath)}: {e}")
         else:
-            logger.debug(f"Preserving original file: {original_filepath}")
+            logger.debug(f"Preserving original file: {format_file_size_with_extension(original_filepath)}")
             
-        logger.info(f"Successfully converted track {idx} to {out_path}")
+        logger.info(f"Successfully converted track {idx}")
         return True, out_path
     except Exception as e:
         error_msg = f"Conversion error: {str(e)}"
@@ -449,12 +502,14 @@ else:
     logger.info("Running from Python script (not bundled)")
 
 class MSCPlaylistGUI:
+    """Main GUI application for downloading and converting audio for My Summer Car."""
+    
     def __init__(self, master):
         self.master = master
         self.cancel_flag = threading.Event()
         self.current_thread = None
         
-        logger.info("Initializing MSC Playlist Converter GUI")
+        logger.info("Initializing GUI")
 
         self.small_geometry = "410x175"
         master.title("MSC Playlist Converter")
@@ -492,6 +547,10 @@ class MSCPlaylistGUI:
         self.high_quality_var = tk.BooleanVar(value=False)
         self.high_quality_checkbox = tk.Checkbutton(mode_frame, text="High Quality", variable=self.high_quality_var)
         self.high_quality_checkbox.pack(side="left", padx=(8, 0))
+        
+        self.normalize_audio_var = tk.BooleanVar(value=True)
+        self.normalize_audio_checkbox = tk.Checkbutton(mode_frame, text="Normalize Audio", variable=self.normalize_audio_var)
+        self.normalize_audio_checkbox.pack(side="left", padx=(8, 0))
 
         self.status_var = tk.StringVar(value="Waiting")
         self.current_song_var = tk.StringVar(value="")
@@ -540,6 +599,32 @@ class MSCPlaylistGUI:
 
         self.high_quality_checkbox.bind("<Enter>", show_high_quality_tooltip)
         self.high_quality_checkbox.bind("<Leave>", hide_high_quality_tooltip)
+
+        def show_normalize_audio_tooltip(event):
+            x = self.normalize_audio_checkbox.winfo_rootx() + self.normalize_audio_checkbox.winfo_width() + 10
+            y = self.normalize_audio_checkbox.winfo_rooty() + 8
+            tooltip = tk.Toplevel(self.normalize_audio_checkbox)
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(f"+{x}+{y}")
+            label = tk.Label(
+                tooltip,
+                text="Normalizes audio levels for consistent volume across tracks",
+                justify='left',
+                background="#ffffe0",
+                relief='solid',
+                borderwidth=1,
+                font=("tahoma", "8", "normal")
+            )
+            label.pack(ipadx=1)
+            self.normalize_audio_tooltip = tooltip
+
+        def hide_normalize_audio_tooltip(event):
+            if hasattr(self, 'normalize_audio_tooltip') and self.normalize_audio_tooltip:
+                self.normalize_audio_tooltip.destroy()
+                self.normalize_audio_tooltip = None
+
+        self.normalize_audio_checkbox.bind("<Enter>", show_normalize_audio_tooltip)
+        self.normalize_audio_checkbox.bind("<Leave>", hide_normalize_audio_tooltip)
 
         self.eta_var = tk.StringVar(value="ETA: --:--")
         self.eta_label = tk.Label(self.button_frame, textvariable=self.eta_var, font=("TkDefaultFont", 9))
@@ -681,13 +766,12 @@ class MSCPlaylistGUI:
             subprocess.Popen(["xdg-open", path])
 
     def open_log_folder(self):
-        """Open the log folder in the file explorer (triggered by F8 key)"""
-        app_temp_dir = os.path.join(tempfile.gettempdir(), 'MSC-Playlist-Converter')
-        log_dir = os.path.join(app_temp_dir, 'logs')
+        """Open application log directory in system file explorer."""
+        log_dir = os.path.join(APP_TEMP_DIR, 'logs')
         if not os.path.isdir(log_dir):
             os.makedirs(log_dir, exist_ok=True)
         
-        logger.info(f"F8 pressed - Opening log folder: {log_dir}")
+        logger.info(f"Opening log folder: {log_dir}")
         
         try:
             if sys.platform == "win32":
@@ -713,8 +797,9 @@ class MSCPlaylistGUI:
         out_folder = self.get_output_folder()
         is_cd = self.output_mode_var.get().startswith("CD")
         
-        logger.info(f"Starting download process. URL: {url}, Output: {out_folder}, CD mode: {is_cd}")
-        logger.info(f"High Quality Audio: {'ENABLED (320k, 48kHz)' if self.high_quality_var.get() else 'DISABLED (96k, 22kHz)'}")
+        logger.info(f"Starting download process. URL: {url}, Output: {out_folder}")
+        logger.info(f"High Quality Audio: {'ENABLED' if self.high_quality_var.get() else 'DISABLED (96k, 22kHz)'}")
+        logger.info(f"Audio Normalization: {'ENABLED' if self.normalize_audio_var.get() else 'DISABLED'}")
 
         urls_to_dl = []
         local_files_to_convert = []
@@ -814,12 +899,12 @@ class MSCPlaylistGUI:
                                 metadata['comment'] = f"Length: {minutes}:{seconds:02d}"
                         else:
                             metadata['title'] = title
-                        success, result = convert_track(filepath, track_idx, out_folder, self.high_quality_var.get(), metadata)
+                        success, result = convert_track(filepath, track_idx, out_folder, self.high_quality_var.get(), metadata, normalize_audio=self.normalize_audio_var.get())
                     else:
                         track_idx = idx
                         filepath, title, thumbnail = download_track(media_url, os.path.join(out_folder, f"track{track_idx}"))
                         metadata = {'title': title}
-                        success, result = convert_track(filepath, track_idx, out_folder, self.high_quality_var.get(), metadata)
+                        success, result = convert_track(filepath, track_idx, out_folder, self.high_quality_var.get(), metadata, normalize_audio=self.normalize_audio_var.get())
                     end_download = time.time()
                     download_time = end_download - start_download
                     if not filepath:
@@ -854,9 +939,8 @@ class MSCPlaylistGUI:
                         eta_thread = threading.Thread(target=eta_countdown, daemon=True)
                         eta_thread.start()
                     if is_cd and not coverart_done and not coverart_path and thumbnail:
-                        # Use app temp directory for thumbnail downloads
-                        app_temp_dir = os.path.join(tempfile.gettempdir(), 'MSC-Playlist-Converter')
-                        thumb_temp_dir = os.path.join(app_temp_dir, 'thumbnails')
+                        # Use cached app temp directory for thumbnail downloads
+                        thumb_temp_dir = os.path.join(APP_TEMP_DIR, 'thumbnails')
                         os.makedirs(thumb_temp_dir, exist_ok=True)
                         thumb_path = os.path.join(thumb_temp_dir, f"coverart_{idx}.png")
                         try:
@@ -879,7 +963,7 @@ class MSCPlaylistGUI:
                         return
                     fname = os.path.basename(localfile)
                     self.safe_after(self.set_current_song, fname, idx, total)
-                    success, result = convert_track(localfile, idx, out_folder, self.high_quality_var.get(), None, delete_original=False)
+                    success, result = convert_track(localfile, idx, out_folder, self.high_quality_var.get(), None, delete_original=False, normalize_audio=self.normalize_audio_var.get())
                     if not success:
                         self.safe_after(self.show_error, result)
                         continue
@@ -966,31 +1050,31 @@ class MSCPlaylistGUI:
         self.current_thread = None
 
 if __name__ == "__main__":
+    """Application entry point."""
     try:
-        logger.info("Creating output directories")
+        logger.info("Creating MSC output directories")
         for sub in ["Radio", "CD1", "CD2", "CD3"]:
             os.makedirs(os.path.join(DEFAULT_MSC_PATH, sub), exist_ok=True)
         
         root = tk.Tk()
-        logger.info("Starting MSC Playlist Converter GUI")
+        logger.info("Starting GUI application")
         
-        # Set application icon with error handling
+        # Load application icon
         try:
             icon_path = resource_path('icon.ico')
             if os.path.exists(icon_path):
                 root.iconbitmap(icon_path)
-                logger.info(f"Icon loaded from: {icon_path}")
             else:
-                logger.warning(f"Icon file not found at: {icon_path}")
+                logger.warning(f"Icon not found: {icon_path}")
         except Exception as e:
-            logger.warning(f"Could not load application icon: {e}")
+            logger.warning(f"Icon load failed: {e}")
         
         app = MSCPlaylistGUI(root)
-        logger.info("Starting main GUI loop")
+        logger.info("Starting main application loop")
         root.mainloop()
         
     except Exception as e:
-        logger.critical(f"Critical error in main: {e}")
+        logger.critical(f"Critical application error: {e}")
         if 'root' in locals():
-            messagebox.showerror("Critical Error", f"A critical error occurred: {e}")
+            messagebox.showerror("Critical Error", f"Application failed to start: {e}")
         raise
