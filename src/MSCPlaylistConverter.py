@@ -24,6 +24,7 @@ APP_VERSION = "2.3"
 
 # Audio encoding settings
 HIGH_QUALITY_BITRATE = "320k"
+HIGH_QUALITY_MONO_BITRATE = "192k"
 HIGH_QUALITY_SAMPLE_RATE = "48000"
 STANDARD_QUALITY_BITRATE = "96k"
 STANDARD_QUALITY_SAMPLE_RATE = "22050"
@@ -316,12 +317,15 @@ def search_youtube_fallback(title, artist=None):
         logger.error(f"YouTube fallback search failed: {e}")
         return None
 
-def build_ffmpeg_command(filepath, out_path, high_quality, normalize_audio, metadata=None):
+def build_ffmpeg_command(filepath, out_path, high_quality, normalize_audio, mono_audio, metadata=None):
     """Construct FFmpeg command with quality and normalization settings."""
+    channel_count = '1' if mono_audio else STANDARD_QUALITY_CHANNELS
+    sample_rate = HIGH_QUALITY_SAMPLE_RATE if mono_audio else (HIGH_QUALITY_SAMPLE_RATE if high_quality else STANDARD_QUALITY_SAMPLE_RATE)
     if high_quality:
-        audio_args = ['-ab', HIGH_QUALITY_BITRATE, '-ar', HIGH_QUALITY_SAMPLE_RATE]
+        bitrate = HIGH_QUALITY_MONO_BITRATE if mono_audio else HIGH_QUALITY_BITRATE
+        audio_args = ['-ab', bitrate, '-ac', channel_count, '-ar', sample_rate]
     else:
-        audio_args = ['-ab', STANDARD_QUALITY_BITRATE, '-ac', STANDARD_QUALITY_CHANNELS, '-ar', STANDARD_QUALITY_SAMPLE_RATE]
+        audio_args = ['-ab', STANDARD_QUALITY_BITRATE, '-ac', channel_count, '-ar', sample_rate]
     
     cmd = [
         FFMPEG_PATH,
@@ -333,7 +337,7 @@ def build_ffmpeg_command(filepath, out_path, high_quality, normalize_audio, meta
     
     if normalize_audio:
         cmd += ['-af', f'loudnorm=I={NORMALIZATION_LOUDNESS}:LRA={NORMALIZATION_LRA}:TP={NORMALIZATION_TRUE_PEAK}']
-    
+
     if metadata:
         for k, v in metadata.items():
             if v:
@@ -357,7 +361,7 @@ def create_safe_temp_file(filepath, idx):
     os.close(temp_fd)
     return temp_filepath
 
-def convert_track(filepath, idx, out_folder, high_quality=True, metadata=None, delete_original=True, normalize_audio=False):
+def convert_track(filepath, idx, out_folder, high_quality=True, metadata=None, delete_original=True, normalize_audio=False, mono_audio=False):
     try:
         logger.info(f"Converting track {idx}: {format_file_size_with_extension(filepath)}")
         logger.debug(f"FFmpeg path: {FFMPEG_PATH}")
@@ -387,7 +391,7 @@ def convert_track(filepath, idx, out_folder, high_quality=True, metadata=None, d
         out_path = os.path.join(out_folder, fname)
         
         # Build FFmpeg command
-        cmd = build_ffmpeg_command(filepath, out_path, high_quality, normalize_audio, metadata)
+        cmd = build_ffmpeg_command(filepath, out_path, high_quality, normalize_audio, mono_audio, metadata)
         
         kwargs = {}
         if sys.platform == "win32":
@@ -511,16 +515,16 @@ class MSCPlaylistGUI:
         
         logger.info("Initializing GUI")
 
-        self.small_geometry = "410x175"
+        self.small_geometry = "500x175"
         master.title("MSC Playlist Converter")
         master.geometry(self.small_geometry)
         master.update_idletasks()
-        width = 410
+        width = 500
         height = 175
         x = (master.winfo_screenwidth() // 2) - (width // 2)
         y = (master.winfo_screenheight() // 2) - (height // 2)
         master.geometry(f"{width}x{height}+{x}+{y}")
-        self.master.minsize(410, 175)
+        self.master.minsize(500, 175)
         self.master.resizable(False, False)
 
         main_frame = tk.Frame(master)
@@ -551,6 +555,10 @@ class MSCPlaylistGUI:
         self.normalize_audio_var = tk.BooleanVar(value=True)
         self.normalize_audio_checkbox = tk.Checkbutton(mode_frame, text="Normalize Audio", variable=self.normalize_audio_var)
         self.normalize_audio_checkbox.pack(side="left", padx=(8, 0))
+
+        self.mono_audio_var = tk.BooleanVar(value=False)
+        self.mono_audio_checkbox = tk.Checkbutton(mode_frame, text="Mono", variable=self.mono_audio_var)
+        self.mono_audio_checkbox.pack(side="left", padx=(8, 0))
 
         self.status_var = tk.StringVar(value="Waiting")
         self.current_song_var = tk.StringVar(value="")
@@ -625,6 +633,32 @@ class MSCPlaylistGUI:
 
         self.normalize_audio_checkbox.bind("<Enter>", show_normalize_audio_tooltip)
         self.normalize_audio_checkbox.bind("<Leave>", hide_normalize_audio_tooltip)
+
+        def show_mono_audio_tooltip(event):
+            x = self.mono_audio_checkbox.winfo_rootx() + self.mono_audio_checkbox.winfo_width() + 10
+            y = self.mono_audio_checkbox.winfo_rooty() + 8
+            tooltip = tk.Toplevel(self.mono_audio_checkbox)
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(f"+{x}+{y}")
+            label = tk.Label(
+                tooltip,
+                text="Forces output to a single audio channel",
+                justify='left',
+                background="#ffffe0",
+                relief='solid',
+                borderwidth=1,
+                font=("tahoma", "8", "normal")
+            )
+            label.pack(ipadx=1)
+            self.mono_audio_tooltip = tooltip
+
+        def hide_mono_audio_tooltip(event):
+            if hasattr(self, 'mono_audio_tooltip') and self.mono_audio_tooltip:
+                self.mono_audio_tooltip.destroy()
+                self.mono_audio_tooltip = None
+
+        self.mono_audio_checkbox.bind("<Enter>", show_mono_audio_tooltip)
+        self.mono_audio_checkbox.bind("<Leave>", hide_mono_audio_tooltip)
 
         self.eta_var = tk.StringVar(value="ETA: --:--")
         self.eta_label = tk.Label(self.button_frame, textvariable=self.eta_var, font=("TkDefaultFont", 9))
@@ -800,6 +834,7 @@ class MSCPlaylistGUI:
         logger.info(f"Starting download process. URL: {url}, Output: {out_folder}")
         logger.info(f"High Quality Audio: {'ENABLED' if self.high_quality_var.get() else 'DISABLED (96k, 22kHz)'}")
         logger.info(f"Audio Normalization: {'ENABLED' if self.normalize_audio_var.get() else 'DISABLED'}")
+        logger.info(f"Mono Audio: {'ENABLED' if self.mono_audio_var.get() else 'DISABLED'}")
 
         urls_to_dl = []
         local_files_to_convert = []
@@ -899,12 +934,12 @@ class MSCPlaylistGUI:
                                 metadata['comment'] = f"Length: {minutes}:{seconds:02d}"
                         else:
                             metadata['title'] = title
-                        success, result = convert_track(filepath, track_idx, out_folder, self.high_quality_var.get(), metadata, normalize_audio=self.normalize_audio_var.get())
+                        success, result = convert_track(filepath, track_idx, out_folder, self.high_quality_var.get(), metadata, normalize_audio=self.normalize_audio_var.get(), mono_audio=self.mono_audio_var.get())
                     else:
                         track_idx = idx
                         filepath, title, thumbnail = download_track(media_url, os.path.join(out_folder, f"track{track_idx}"))
                         metadata = {'title': title}
-                        success, result = convert_track(filepath, track_idx, out_folder, self.high_quality_var.get(), metadata, normalize_audio=self.normalize_audio_var.get())
+                        success, result = convert_track(filepath, track_idx, out_folder, self.high_quality_var.get(), metadata, normalize_audio=self.normalize_audio_var.get(), mono_audio=self.mono_audio_var.get())
                     end_download = time.time()
                     download_time = end_download - start_download
                     if not filepath:
@@ -963,7 +998,7 @@ class MSCPlaylistGUI:
                         return
                     fname = os.path.basename(localfile)
                     self.safe_after(self.set_current_song, fname, idx, total)
-                    success, result = convert_track(localfile, idx, out_folder, self.high_quality_var.get(), None, delete_original=False, normalize_audio=self.normalize_audio_var.get())
+                    success, result = convert_track(localfile, idx, out_folder, self.high_quality_var.get(), None, delete_original=False, normalize_audio=self.normalize_audio_var.get(), mono_audio=self.mono_audio_var.get())
                     if not success:
                         self.safe_after(self.show_error, result)
                         continue
